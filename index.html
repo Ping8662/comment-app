@@ -21,6 +21,7 @@ th{background:#ebe3d3;padding:.4rem;font-size:.85rem;position:sticky;top:0}td{pa
   <h1 class="text-xl font-bold mr-2">🌿 班級 AI 評語微調與學期記錄助手</h1>
   <span id="tabs"></span><span id="cloud" class="text-xs text-stone-500 ml-1"></span>
   <div class="ml-auto flex flex-wrap gap-2">
+    <button class="btn blue" onclick="A.ims(true)">📥 匯入歷史資料</button>
     <button class="btn blue" onclick="A.exp()">⬇ 匯出備份</button>
     <label class="btn blue cursor-pointer">⬆ 匯入<input type="file" accept=".json" class="hidden" onchange="A.imp(this)"></label>
     <button class="btn alt" onclick="A.arch()">🎓 畢業封存</button>
@@ -38,6 +39,16 @@ th{background:#ebe3d3;padding:.4rem;font-size:.85rem;position:sticky;top:0}td{pa
     <label class="text-sm">firebaseConfig（貼上 Firebase 控制台的 { apiKey:..., projectId:... } 物件）<textarea id="c_fb" rows="6" class="inp font-mono"></textarea></label>
     <label class="text-sm">學生名單（每行一位，依座號 1~N；保留原有資料依座號對應）<textarea id="c_roster" rows="8" class="inp"></textarea></label>
     <div class="flex gap-2 justify-end"><button class="btn gray" onclick="A.cfg(false)">取消</button><button class="btn" onclick="A.saveCfg()">儲存設定</button></div>
+  </div>
+</div>
+<div id="imodal" class="hidden fixed inset-0 bg-black/30 flex items-center justify-center p-3 z-40">
+  <div class="card w-full max-w-2xl max-h-[92vh] overflow-auto space-y-2">
+    <h2 class="font-bold text-lg">📥 匯入歷史資料</h2>
+    <p class="text-sm text-stone-600">從 Excel / Google 試算表複製整個表格（含標題列）貼到下方，或選擇 CSV 檔。欄位順序：座號、姓名、五上期末評語、五年級春節卡片、五下期末評語、六上期末評語、六年級春節卡片、六下期末評語（可再加「六年級畢業卡片」）。空白格會略過，不會覆蓋已有資料；座號相符就更新，找不到就新增學生。</p>
+    <div class="flex gap-2 items-center"><button class="btn gray" onclick="A.tpl()">⬇ 下載範本 CSV</button><label class="btn blue cursor-pointer">選擇 CSV 檔<input type="file" accept=".csv,.tsv,.txt" class="hidden" onchange="A.ifile(this)"></label></div>
+    <textarea id="i_txt" rows="9" class="inp font-mono" placeholder="在此貼上表格內容…"></textarea>
+    <label class="text-sm"><input type="checkbox" id="i_st" checked> 同時把這些評語加入 AI 風格範本（讓 AI 學習我的口吻）</label>
+    <div class="flex gap-2 justify-end"><button class="btn gray" onclick="A.ims(false)">取消</button><button class="btn" onclick="A.doImport()">開始匯入</button></div>
   </div>
 </div>
 <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-stone-700 text-white px-4 py-2 rounded-xl text-sm hidden z-50"></div>
@@ -97,7 +108,9 @@ async function gem(p){
 }
 function prompt(s,k,words){
  const h=F.filter(([f])=>f!==k&&s.fields[f]).map(([f,l])=>`【${l}】${s.fields[f]}`).join('\n')||'（尚無歷史紀錄）';
- const st=S.styles.slice(-6).map((x,i)=>`範本${i+1}（${x.t}）：${x.text}`).join('\n')||'（尚無範本，請用溫暖、具體的導師口吻）';
+ const kd=f=>f==='grad'?'grad':f[0]==='c'?'c':'g';
+ const pool=S.styles.filter(x=>kd(x.f||T.find(a=>a[1]===x.t)?.[0]||'g6d')===kd(k));
+ const st=[...(pool.length?pool:S.styles)].sort(()=>Math.random()-.5).slice(0,5).map((x,i)=>`範本${i+1}（${x.t}）：${x.text}`).join('\n')||'（尚無範本，請用溫暖、具體的導師口吻）';
  const kind=k==='grad'?'畢業卡片留言':k.startsWith('c')?'春節祝福卡片':'學期末評語';
  return `你是一位溫暖細心的國小導師，請為學生「${s.name||'座號'+s.no}」撰寫「${L(k)}」（${kind}）。
 【老師過去的風格範本，請模仿口吻與用字習慣】\n${st}
@@ -105,7 +118,7 @@ function prompt(s,k,words){
 【本次老師想強調的重點】\n${words||'（老師未提供，請依歷史紀錄合理發揮，勿捏造具體事件）'}
 要求：繁體中文；120~180字；具體、溫暖、自然；以一段文字輸出；不要標題、不要列點、不要加引號；不捏造老師未提供的具體事實。直接輸出內容。`;
 }
-function learn(text,k){if(!S.styles.some(x=>x.text===text))S.styles.push({t:L(k),text});S.styles=S.styles.slice(-20)}
+function learn(text,k){if(!S.styles.some(x=>x.text===text))S.styles.push({t:L(k),f:k,text});S.styles=S.styles.slice(-80)}
 
 // ---------- 畫面 ----------
 function tagsHTML(){
@@ -152,8 +165,43 @@ function renderBatch(){
 }
 
 // ---------- 動作 ----------
+function parseTable(t){
+ const d=t.includes('\t')?'\t':',';const rows=[];let r=[],c='',q=false;
+ for(let i=0;i<t.length;i++){const ch=t[i];
+  if(q){if(ch==='"'){if(t[i+1]==='"'){c+='"';i++}else q=false}else c+=ch}
+  else if(ch==='"'&&c==='')q=true;
+  else if(ch===d){r.push(c);c=''}
+  else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&t[i+1]==='\n')i++;r.push(c);rows.push(r);r=[];c=''}
+  else c+=ch}
+ if(c||r.length){r.push(c);rows.push(r)}
+ return rows.filter(x=>x.some(v=>v.trim()))}
 const A=window.A={
  view(v){view=v;render()},
+ ims(v){$('imodal').classList.toggle('hidden',!v)},
+ tpl(){
+  const h=['座號','姓名',...T.map(x=>x[1])].join(',');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+h+'\n1,王小明,"五上評語範例…",,,,,,\n2,李小華,,,,,,,\n'],{type:'text/csv'}));a.download='匯入範本.csv';a.click()},
+ async ifile(el){
+  const f=el.files[0];if(!f)return;const b=await f.arrayBuffer();let t;
+  try{t=new TextDecoder('utf-8',{fatal:true}).decode(b)}catch{t=new TextDecoder('big5').decode(b)}
+  $('i_txt').value=t.replace(/^\ufeff/,'');el.value=''},
+ doImport(){
+  const rows=parseTable($('i_txt').value);if(!rows.length)return toast('沒有讀到資料');
+  const h=rows[0].map(x=>x.trim().replace(/\s/g,''));
+  const hasH=h.some(x=>/座號|姓名|期末|卡片/.test(x));let m;
+  if(hasH){m={no:h.findIndex(x=>/座號/.test(x)),name:h.findIndex(x=>/姓名|名字/.test(x))};
+   T.forEach(([k,l])=>m[k]=h.findIndex(x=>x.includes(l)||(k==='grad'&&/畢業/.test(x))))}
+  else{m={no:0,name:1};T.forEach(([k],i)=>m[k]=i+2)}
+  const learnIt=$('i_st').checked;let n=0,ns=0;
+  (hasH?rows.slice(1):rows).forEach((r,ri)=>{
+   const no=parseInt(r[m.no]),name=(r[m.name]||'').trim();
+   let s=S.students.find(x=>(no&&x.no===no)||(!no&&name&&x.name===name));
+   if(!s){if(!no&&!name)return;s={no:no||S.students.length+1+ri,name,fields:{}};S.students.push(s);ns++}
+   if(name&&!s.name)s.name=name;
+   T.forEach(([k])=>{const v=m[k]>=0?(r[m[k]]||'').trim():'';if(v){s.fields[k]=v;n++;if(learnIt)learn(v,k)}});
+  });
+  S.students.sort((a,b)=>a.no-b.no);bd={};save();A.ims(false);render();
+  toast(`✅ 匯入 ${n} 筆評語${ns?`，新增 ${ns} 位學生`:''}`,4000)},
  async login(){if(!au)return toast('請先在「設定」貼上 firebaseConfig');
   try{au.auth.currentUser?await au.m.signOut(au.auth):await au.m.signInWithPopup(au.auth,new au.m.GoogleAuthProvider())}catch(e){toast('登入失敗：'+e.message,5000)}},
  pick(i){cur=i;draft='';editT=S.students[i].fields[tgt]||'';render()},
